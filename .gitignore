@@ -12,5 +12,8 @@ kubeval
 \#*\#
 .\#*
 
+# Release tool
+.release-state.json
+
 # LLM related
 .claude

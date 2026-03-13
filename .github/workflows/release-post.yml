@@ -1,0 +1,80 @@
+name: Post Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+jobs:
+  post-release:
+    # Only run when a release-* branch is merged into develop
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install helm-docs
+        uses: envoy/install-helm-docs@v1.0.0
+        with:
+          version: 1.11.0
+
+      - name: Merge develop into master
+        run: |
+          git fetch origin master
+          git switch master
+          git pull
+          git merge develop
+          git push origin master
+
+      - name: Read and bump chart version
+        id: version
+        run: |
+          CHART_VERSION=$(grep '^version:' charts/vector/Chart.yaml | sed 's/version: "\(.*\)"/\1/')
+          MAJOR=$(echo "$CHART_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CHART_VERSION" | cut -d. -f2)
+          NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
+          echo "current=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+          echo "next=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create version bump branch
+        run: |
+          git switch develop
+          git checkout -b "bump-chart-version-${{ steps.version.outputs.next }}"
+
+      - name: Bump chart version
+        run: |
+          sed -i 's/version: "${{ steps.version.outputs.current }}"/version: "${{ steps.version.outputs.next }}"/' \
+            charts/vector/Chart.yaml
+
+      - name: Update Helm docs
+        run: helm-docs
+
+      - name: Commit and push
+        run: |
+          git add .
+          git commit -m "chore(releasing): Bump chart version to ${{ steps.version.outputs.next }}"
+          git push -u origin "bump-chart-version-${{ steps.version.outputs.next }}"
+
+      - name: Create PR
+        run: |
+          gh pr create \
+            --title "chore(releasing): Bump chart version to ${{ steps.version.outputs.next }}" \
+            --body "Post release version bump" \
+            --base develop \
+            --head "bump-chart-version-${{ steps.version.outputs.next }}"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}

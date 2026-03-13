@@ -1,0 +1,86 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+
+# Requires a RELEASE_TOKEN secret (PAT with repo scope) so that the PR and
+# subsequent pushes can trigger other workflows (GITHUB_TOKEN cannot do that).
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v5
+        with:
+          ref: develop
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install helm-docs
+        uses: envoy/install-helm-docs@v1.0.0
+        with:
+          version: 1.11.0
+
+      - name: Install yq
+        run: |
+          sudo curl -sSL -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Install git-cliff
+        run: |
+          curl -sSL https://github.com/orhun/git-cliff/releases/download/v2.7.0/git-cliff-2.7.0-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz
+          sudo mv git-cliff-2.7.0-x86_64-unknown-linux-gnu/git-cliff /usr/local/bin/
+
+      - name: Get latest Vector version
+        id: vector
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/vectordotdev/vector/releases/latest \
+            | grep -oE '"tag_name": *"[^"]+"' \
+            | sed 's/"tag_name": *"v//;s/"//')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release branch
+        run: git checkout -b "release-${{ steps.vector.outputs.version }}"
+
+      - name: Update Vector appVersion
+        run: .github/release-vector-version.sh
+
+      - name: Update Helm docs
+        run: helm-docs
+
+      - name: Commit version bump
+        run: |
+          git add .
+          git commit -m "feat(vector): Bump Vector to ${{ steps.vector.outputs.version }} and update Helm docs"
+
+      - name: Regenerate CHANGELOG
+        run: .github/release-changelog.sh
+
+      - name: Commit changelog
+        run: |
+          git add .
+          git commit -m "feat(vector): Regenerate CHANGELOG for ${{ steps.vector.outputs.version }}"
+
+      - name: Push branch
+        run: git push -u origin "release-${{ steps.vector.outputs.version }}"
+
+      - name: Create PR
+        run: |
+          gh pr create \
+            --title "feat(releasing): Release Vector ${{ steps.vector.outputs.version }}" \
+            --body "" \
+            --base develop \
+            --head "release-${{ steps.vector.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
